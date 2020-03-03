@@ -296,32 +296,37 @@ def ocs_install_verification(timeout=600, skip_osd_distribution_check=False):
         log.info("Verified - pool crush rule is with type: zone")
 
 
-def add_capacity(capacity):
+def add_capacity(osd_size_capacity_requested):
     """
    Add storage capacity to the cluster
    Args:
-        capacity(int): Size of the storage to add as number of deviceSets
+        osd_size_capacity_requested(int): Requested osd size capacity
 
    Returns:
         boolean : Returns True if all OSDs are in Running state
    """
-    ocp = OCP(namespace=defaults.ROOK_CLUSTER_NAMESPACE, kind=constants.STORAGECLUSTER)
-    sc = ocp.get()
-    device_set_count = sc.get('items')[0].get('spec').get('storageDeviceSets')[0].get('count')
-    capacity_to_add = device_set_count + capacity
-
+    sc = get_storage_cluster()
+    old_storage_devices_sets_count = get_deviceset_count()
+    osd_size_existing = get_osd_size()
+    new_storage_devices_sets_count = int((osd_size_capacity_requested / osd_size_existing)
+                                         + old_storage_devices_sets_count
+                                         )
     # adding the storage capacity to the cluster
-    params = f"""[{{"op": "replace", "path": "/spec/storageDeviceSets/0/count", "value":{capacity_to_add}}}]"""
-    ocp.patch(
-        resource_name=sc['items'][0]['metadata']['name'],
+    params = f"""[{{"op": "replace", "path": "/spec/storageDeviceSets/0/count",
+     "value": {new_storage_devices_sets_count}}}]"""
+    sc.patch(
+        resource_name=sc.get()['items'][0]['metadata']['name'],
         params=params,
         format_type='json'
     )
-    pod = ocp.OCP(
+    pod = OCP(
         kind=constants.POD, namespace=config.ENV_DATA['cluster_namespace']
     )
-    pod.ocp.wait_for_resource(timeout=180, condition=constants.STATUS_RUNNING,
-                              selector='app=rook-ceph-osd', resource_count=capacity_to_add * 3)
+    pod.wait_for_resource(
+        timeout=180,
+        condition=constants.STATUS_RUNNING,
+        selector='app=rook-ceph-osd',
+        resource_count=new_storage_devices_sets_count * 3)
     return True
 
 
@@ -332,7 +337,31 @@ def get_storage_cluster(namespace=defaults.ROOK_CLUSTER_NAMESPACE):
        namespace (str): Namespace of the resource
 
    Returns:
-       yaml: Storage cluster yaml
+       storage cluster (obj) : Storage cluster object handler
     """
     sc_obj = OCP(kind=constants.STORAGECLUSTER, namespace=namespace)
-    return sc_obj.get()
+    return sc_obj
+
+
+def get_osd_size():
+    """
+    Get osd size from Storage cluster
+
+    Returns:
+        int: osd size
+    """
+    sc = get_storage_cluster()
+    return int(sc.get().get('items')[0].get('spec').get('storageDeviceSets')[0].
+               get('dataPVCTemplate').get('spec').get('resources').get('requests').get('storage')[:-2]
+               )
+
+
+def get_deviceset_count():
+    """
+    Get storageDeviceSets count  from storagecluster
+
+    Returns:
+        int: storageDeviceSets count
+    """
+    sc = get_storage_cluster()
+    return int(sc.get().get('items')[0].get('spec').get('storageDeviceSets')[0].get('count'))
